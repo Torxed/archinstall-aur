@@ -8,4 +8,5 @@ def install_aur_packages(*packages):
 
 	print('Installing AUR packages:', packages)
 
+# Example function injection
 archinstall.install_aur_packages = install_aur_packages
