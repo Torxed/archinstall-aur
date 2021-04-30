@@ -1,5 +1,6 @@
 # archinstall-aur
-Archinstall plugin to handle AUR packages
+Archinstall plugin concept to handle AUR packages.<br>
+Will not work unless https://github.com/archlinux/archinstall/pull/393 is merged in.
 
 ---
 
