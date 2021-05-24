@@ -1,5 +1,7 @@
 import archinstall
 
+__version__ = 0.1
+
 class Plugin():
 	def on_pacstrap(self, packages :list) -> list:
 		print(f"Identifying AUR packages in package list: {packages}")
