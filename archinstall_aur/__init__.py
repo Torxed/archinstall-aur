@@ -17,4 +17,4 @@ def dummy_example(*args, **kwargs):
 	pass
 
 # Example function injection
-archinstall.plugin_function = dummy_example()
+archinstall.plugin_function = dummy_example
