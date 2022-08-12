@@ -18,8 +18,8 @@ except:
 AUR_USER_CREATED = False
 
 def untar_file(file):
-	archinstall.log(f"/usr/bin/sudo -H -u {archinstall.arguments.get('aur-user', 'aoffline_usr')} /usr/bin/tar --directory /home/{archinstall.arguments.get('aur-user', 'aoffline_usr')}/ -xvzf {file}", level=logging.DEBUG, fg="gray")
-	archinstall.SysCommand(f"/usr/bin/sudo -H -u {archinstall.arguments.get('aur-user', 'aoffline_usr')} /usr/bin/tar --directory /home/{archinstall.arguments.get('aur-user', 'aoffline_usr')}/ -xvzf {file}")
+	archinstall.log(f"(runas {sudo_user}) /usr/bin/tar --directory /home/{sudo_user}/ -xvzf {file}", level=logging.DEBUG, fg="gray")
+	archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/tar --directory /home/{sudo_user}/ -xvzf {file}", run_as=sudo_user)
 
 def download_file(url, destination, filename=""):
 	if not (dst := pathlib.Path(destination)).exists():
@@ -72,27 +72,28 @@ class Plugin():
 				archinstall.log(f"Setting up temporary AUR build user {sudo_user} and installing build tools", level=logging.INFO, fg="gray")
 				# We have to install fakeroot to the live medium as it's missing
 				# (wasn't ever really intended to build stuff..)
-				archinstall.storage['installation_session'].pacstrap('--noconfirm -S fakeroot base-devel')
+				archinstall.storage['installation_session'].pacstrap('fakeroot', 'base-devel')
 
-				with open(f'/etc/sudoers.d/{sudo_user}', 'w') as fh:
+				with open(f'{mount_location}/etc/sudoers.d/{sudo_user}', 'w') as fh:
 					# TODO: This could be tweaked to only contain the binaries needed, such as `makepkg` and `pacman -U`.
 					# But it's done in the live environment, not the final installation..
 					# So risks are low unless the user pre-enabled sshd with a login for said user.
 					fh.write(f"{sudo_user} ALL=(ALL:ALL) NOPASSWD: ALL\n")
 
 				archinstall.log(f"Creating temporary build user {sudo_user}")
-				archinstall.SysCommand(f"/usr/bin/useradd -m -N -s /bin/bash {sudo_user}")
+				archinstall.storage['installation_session'].user_create(sudo_user, password='somethingrandom')
+				# archinstall.SysCommand(f"/usr/bin/useradd -m -N -s /bin/bash {sudo_user}")
 
 				AUR_USER_CREATED = True
 
 			archinstall.log(f"Building AUR package {package}", level=logging.INFO, fg="yellow")
-			if not download_file(f"https://aur.archlinux.org/cgit/aur.git/snapshot/{package}.tar.gz", destination=f"/home/{sudo_user}/", filename=f"{package}.tar.gz"):
+			if not download_file(f"https://aur.archlinux.org/cgit/aur.git/snapshot/{package}.tar.gz", destination=f"{mount_location}/home/{sudo_user}/", filename=f"{package}.tar.gz"):
 				archinstall.log(f"Could not retrieve {package} from: https://aur.archlinux.org/cgit/aur.git/snapshot/{package}.tar.gz", fg="red", level=logging.ERROR)
 				exit(1)
 
-			archinstall.SysCommand(f"/usr/bin/chown {sudo_user} /home/{sudo_user}/{package}.tar.gz")
+			archinstall.storage['installation_session'].chown(sudo_user, f"/home/{sudo_user}/{package}.tar.gz")
 			untar_file(f"/home/{sudo_user}/{package}.tar.gz")
-			with open(f"/home/{sudo_user}/{package}/PKGBUILD", 'r') as fh:
+			with open(f"{mount_location}/home/{sudo_user}/{package}/PKGBUILD", 'r') as fh:
 				PKGBUILD = fh.read()
 
 			# This regexp needs to accomodate multiple keys, as well as the logic below
@@ -101,33 +102,35 @@ class Plugin():
 				for key in gpgkeys:
 					key = key[13:].strip('(\')"')
 					archinstall.log(f"Adding GPG-key {key} to session for {sudo_user}")
-					archinstall.SysCommand(f"/usr/bin/sudo -H -u {sudo_user} /usr/bin/gpg --recv-keys {key}")
+					archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/gpg --recv-keys {key}", run_as=sudo_user)
 
-			if (build_handle := archinstall.SysCommand(f"/usr/bin/sudo -H -u {sudo_user} /bin/bash -c \"cd /home/{sudo_user}/{package}; makepkg --clean --force --cleanbuild --noconfirm --needed -s\"", peak_output=archinstall.arguments.get('verbose', False))).exit_code != 0:
+			if (build_handle := archinstall.storage['installation_session'].arch_chroot(f"/bin/bash -c \"cd /home/{sudo_user}/{package}; makepkg --clean --force --cleanbuild --noconfirm --needed -s\"", run_as=sudo_user)).exit_code != 0:
 				archinstall.log(build_handle, level=logging.ERROR)
 				archinstall.log(f"Could not build {package}, see traceback above. Continuing to avoid re-build needs for the rest of the run and re-runs.", fg="red", level=logging.ERROR)
 			else:
 				if (built_package := glob.glob(f"/home/{sudo_user}/{package}/*.tar.zst")):
-					shutil.move(built_package[0], f"{mount_location}/root/")
-					archinstall.SysCommand(f"/usr/bin/chown root. {built_package[0]}")
-					shutil.rmtree(f"/home/{sudo_user}/{package}")
-					pathlib.Path(f"/home/{sudo_user}/{package}.tar.gz").unlink()
+					built_package = pathlib.Path(built_package[0])
 
-					archinstall.SysCommand(f"/usr/bin/arch-chroot {mount_location} sh -c 'pacman -U {built_package[0]}'")
+					archinstall.SysCommand(f"/usr/bin/arch-chroot {mount_location} sh -c 'pacman -U /home/{sudo_user}/{package}/{built_package}'")
+					# shutil.move(f"{mount_location}/home/{sudo_user}/{package}/{built_package}", f"{mount_location}/root/")
+					# archinstall.storage['installation_session'].chown(sudo_user, f"/home/{sudo_user}/{built_package[0]}")
+					# archinstall.SysCommand(f"/usr/bin/chown root. {built_package[0]}")
+					shutil.rmtree(f"{mount_location}/home/{sudo_user}/{package}")
+					pathlib.Path(f"{mount_location}/home/{sudo_user}/{package}.tar.gz").unlink()
 				else:
 					archinstall.log(f"Could not build {package}, see traceback above. Continuing to avoid re-build needs for the rest of the run and re-runs.", fg="red", level=logging.ERROR)
 
 		if AUR_USER_CREATED:
 			archinstall.log(f"Removing temporary build user {sudo_user}")
 
-			pathlib.Path(f'/etc/sudoers.d/{sudo_user}').unlink()
-			shutil.rmtree(f"/home/{sudo_user}")
+			pathlib.Path(f'{mount_location}/etc/sudoers.d/{sudo_user}').unlink()
+			shutil.rmtree(f"{mount_location}/home/{sudo_user}")
 
 			# Stop dirmngr and gpg-agent before removing home directory and running userdel
-			archinstall.SysCommand(f"/usr/bin/systemctl --machine={sudo_user}@.host --user stop dirmngr.socket") # Doesn't do anything?
-			archinstall.SysCommand(f"/usr/bin/killall -u {sudo_user}")
-			archinstall.SysCommand(f"/usr/bin/sudo -H -u {sudo_user} /usr/bin/gpgconf --kill gpg-agent")
-			archinstall.SysCommand(f"/usr/bin/userdel {sudo_user}")
+			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/systemctl --machine={sudo_user}@.host --user stop dirmngr.socket", run_as=sudo_user)
+			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/killall -u {sudo_user}", run_as=sudo_user)
+			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/sudo -H -u {sudo_user} /usr/bin/gpgconf --kill gpg-agent", run_as=sudo_user)
+			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/userdel {sudo_user}", run_as=sudo_user)
 
 			shutil.rmtree(f"/home/{sudo_user}")
 
