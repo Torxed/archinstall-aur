@@ -1,6 +1,7 @@
 # archinstall-aur
 Archinstall plugin concept to handle AUR packages.<br>
-Will not work unless https://github.com/archlinux/archinstall/pull/393 is merged in.
+
+⚠️ There is no support offered for AUR packages, but if you have questions about this or other plugins, or surrounding archinstall - ping me on the archinstall discord server and we can bounce ideas.
 
 ---
 
