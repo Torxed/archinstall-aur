@@ -42,34 +42,25 @@ class Plugin():
 
 		archinstall.log(f"Identifying AUR packages in package list: {packages}", level=logging.INFO, fg="gray")
 		aur_packages = []
-		non_aur_packages = []
+		std_packages = []
 
-		#if 'base' not in packages and 'zram-generator' not in packages and 'efibootmgr' not in packages and 'pipewire' not in packages and 'nano' not in packages:
-		#	exit(1)
-
-		# There really should be a OPTIONS pre-flight allowed here.
-		# Or a JSON endpoint that doesn't have the same load on the search server.
-		# Dunking down the whole page just to get the status code waste about
-		# ~200ms of loading time on Arch's end. But this is the most reliable
-		# way for now to find an AUR package.
+		# We'd like to use upstream or a local JSON database to lookup packages.
+		# But for now this is the lowest latency option that doesn't hog resources upstream.
 		for package in packages:
 			try:
-				request = urllib.request.urlopen(f"https://aur.archlinux.org/packages/{package}")
-				status = request.status
-				request.close()
-			except urllib.error.HTTPError as error:
-				status = error.status
+				if archinstall.SysCommand(f"pacman -Ss {package}").exit_code == 0:
+					std_packages.append(package)
+				else:
+					aur_packages.append(package)
 
-			if status == 200:
+			except archinstall.SysCallError:
 				aur_packages.append(package)
-			else:
-				non_aur_packages.append(package)
 
 		mount_location = archinstall.storage['installation_session'].target
 
 		for package in aur_packages:
 			if AUR_USER_CREATED is False:
-				archinstall.log(f"Setting up temporary AUR build user {sudo_user} and installing build tools", level=logging.INFO, fg="gray")
+				archinstall.log(f"Setting up temporary AUR build user {sudo_user} and installing build tools for {aur_packages}", level=logging.INFO, fg="gray")
 				# We have to install fakeroot to the live medium as it's missing
 				# (wasn't ever really intended to build stuff..)
 				archinstall.storage['installation_session'].pacstrap('fakeroot', 'base-devel')
@@ -108,36 +99,42 @@ class Plugin():
 				archinstall.log(build_handle, level=logging.ERROR)
 				archinstall.log(f"Could not build {package}, see traceback above. Continuing to avoid re-build needs for the rest of the run and re-runs.", fg="red", level=logging.ERROR)
 			else:
-				if (built_package := glob.glob(f"/home/{sudo_user}/{package}/*.tar.zst")):
-					built_package = pathlib.Path(built_package[0])
+				print(f"Looking for: {mount_location}/home/{sudo_user}/{package}/*.tar.zst")
+				if (built_package := glob.glob(f"{mount_location}/home/{sudo_user}/{package}/*.tar.zst")):
+					built_package = pathlib.Path(built_package[0]).name
+					print(f"Found package: {built_package}")
 
-					archinstall.SysCommand(f"/usr/bin/arch-chroot {mount_location} sh -c 'pacman -U /home/{sudo_user}/{package}/{built_package}'")
-					# shutil.move(f"{mount_location}/home/{sudo_user}/{package}/{built_package}", f"{mount_location}/root/")
-					# archinstall.storage['installation_session'].chown(sudo_user, f"/home/{sudo_user}/{built_package[0]}")
-					# archinstall.SysCommand(f"/usr/bin/chown root. {built_package[0]}")
+					archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/pacman --noconfirm -U /home/{sudo_user}/{package}/{built_package}")
 					shutil.rmtree(f"{mount_location}/home/{sudo_user}/{package}")
 					pathlib.Path(f"{mount_location}/home/{sudo_user}/{package}.tar.gz").unlink()
 				else:
-					archinstall.log(f"Could not build {package}, see traceback above. Continuing to avoid re-build needs for the rest of the run and re-runs.", fg="red", level=logging.ERROR)
+					archinstall.log(f"Could not locate {package}.tar.zst after build.", fg="red", level=logging.ERROR)
+					exit(1)
 
 		if AUR_USER_CREATED:
 			archinstall.log(f"Removing temporary build user {sudo_user}")
 
 			pathlib.Path(f'{mount_location}/etc/sudoers.d/{sudo_user}').unlink()
+
+			# TODO: These are only needed if we run Installation.Boot():
+			# Stop dirmngr and gpg-agent before removing home directory and running userdel
+			# archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/systemctl --machine={sudo_user}@.host --user stop dirmngr.socket", run_as=sudo_user)
+			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/gpgconf --kill gpg-agent", run_as=sudo_user)
+			try:
+				archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/killall -u {sudo_user}", run_as=sudo_user)
+			except archinstall.SysCallError:
+				# We'll terminate our own running process and that's fine
+				pass
+			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/userdel {sudo_user}")
+
 			shutil.rmtree(f"{mount_location}/home/{sudo_user}")
 
-			# Stop dirmngr and gpg-agent before removing home directory and running userdel
-			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/systemctl --machine={sudo_user}@.host --user stop dirmngr.socket", run_as=sudo_user)
-			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/killall -u {sudo_user}", run_as=sudo_user)
-			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/sudo -H -u {sudo_user} /usr/bin/gpgconf --kill gpg-agent", run_as=sudo_user)
-			archinstall.storage['installation_session'].arch_chroot(f"/usr/bin/userdel {sudo_user}", run_as=sudo_user)
-
-			shutil.rmtree(f"/home/{sudo_user}")
+			AUR_USER_CREATED = False
 
 		# Returns a curated list of packages that exludes any AUR packages.
 		# This allows installataion.pacstrap() to contain AUR packages,
 		# but won't handle them or try to install them since we remove those here.
-		return non_aur_packages
+		return std_packages
 
 def dummy_example(*args, **kwargs):
 	pass
